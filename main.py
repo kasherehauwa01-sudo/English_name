@@ -181,6 +181,21 @@ def translit_to_ru(text: str) -> str:
     return LATIN_TOKEN_RE.sub(lambda m: translit_token(m.group(0)), text)
 
 
+
+def deduplicate_rows_by_code(rows: list[MatchRow]) -> list[MatchRow]:
+    """Удаляет дубликаты по колонке `Код`, оставляя первую встретившуюся строку."""
+    seen: set[str] = set()
+    unique_rows: list[MatchRow] = []
+
+    for row in rows:
+        key = (row.code or "").strip()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_rows.append(row)
+
+    return unique_rows
+
 def write_xls(rows: list[MatchRow], out_file: str) -> str:
     """Пишет отчёт в .xls. Если xlwt недоступен — использует HTML-таблицу с расширением .xls."""
     final = out_file if out_file.lower().endswith(".xls") else f"{out_file}.xls"
@@ -371,14 +386,17 @@ def scan_folder(folder_path: str, out_file: str, status_callback=None) -> dict:
             errors.append((str(file_path), str(exc)))
             logger.error("Ошибка чтения %s: %s", file_path, exc)
 
+    set_status("Удаляю дубликаты по колонке 'Код'...")
+    unique_rows = deduplicate_rows_by_code(all_rows)
+
     set_status("Формирую итоговый XLS...")
-    final_output = write_xls(all_rows, out_file)
+    final_output = write_xls(unique_rows, out_file)
     set_status("Готово")
 
     return {
         "files": len(files),
         "files_with_columns": files_with_columns,
-        "written": len(all_rows),
+        "written": len(unique_rows),
         "errors": errors,
         "output": final_output,
     }
@@ -413,14 +431,17 @@ def scan_uploaded_files(uploaded_files: list, out_file: str, status_callback=Non
             errors.append((uf.name, str(exc)))
             logger.error("Ошибка чтения %s: %s", uf.name, exc)
 
+    set_status("Удаляю дубликаты по колонке 'Код'...")
+    unique_rows = deduplicate_rows_by_code(all_rows)
+
     set_status("Формирую итоговый XLS...")
-    final_output = write_xls(all_rows, out_file)
+    final_output = write_xls(unique_rows, out_file)
     set_status("Готово")
 
     return {
         "files": len(uploaded_files),
         "files_with_columns": files_with_columns,
-        "written": len(all_rows),
+        "written": len(unique_rows),
         "errors": errors,
         "output": final_output,
     }
