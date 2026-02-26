@@ -67,12 +67,24 @@ def find_required_columns(columns: list[object]) -> tuple[Optional[object], Opti
     code_col = None
     name_col = None
 
+    # По требованию: в отчёт в колонку "Код" берём значение именно из колонки "Код".
+    for col in columns:
+        if normalize_header(col) == "код":
+            code_col = col
+            break
+
     for col in columns:
         n = normalize_header(col)
-        if code_col is None and n in {"код товара", "код", "артикул"}:
-            code_col = col
         if name_col is None and n in {"наименование товаров", "наименование товара", "наименование"}:
             name_col = col
+
+    # Фоллбэк для кода оставляем только если точной колонки "Код" нет.
+    if code_col is None:
+        for col in columns:
+            n = normalize_header(col)
+            if n in {"код товара", "артикул"}:
+                code_col = col
+                break
 
     if code_col is None:
         for col in columns:
@@ -80,6 +92,7 @@ def find_required_columns(columns: list[object]) -> tuple[Optional[object], Opti
             if "код" in n and "товар" in n:
                 code_col = col
                 break
+
     if name_col is None:
         for col in columns:
             n = normalize_header(col)
