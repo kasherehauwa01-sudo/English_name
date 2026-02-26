@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-import xlwt
 
 LATIN_RE = re.compile(r"[A-Za-z]")
 LATIN_TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*")
@@ -214,6 +213,11 @@ def translit_to_ru(text: str) -> str:
 
 def write_xls(rows: list[MatchRow], out_file: str) -> int:
     """Записывает отчёт именно в .xls (по требованию)."""
+    try:
+        import xlwt
+    except Exception as exc:
+        raise RuntimeError("Для записи .xls установите зависимость xlwt (pip install xlwt)") from exc
+
     book = xlwt.Workbook()
     sheet = book.add_sheet("latin")
 
