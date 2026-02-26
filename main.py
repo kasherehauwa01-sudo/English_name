@@ -19,7 +19,6 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Iterable, Optional
 from urllib.parse import urljoin, urlparse
 
@@ -498,6 +497,14 @@ def setup_logging(log_file: str = "parse.log") -> None:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Парсер vologorost.ru для поиска латиницы в товарах")
     p.add_argument("--start-url", default="https://volgorost.ru/", help="Стартовый URL")
+    p.add_argument(
+        "--category-url",
+        default=None,
+        help=(
+            "URL конкретного раздела каталога. "
+            "Если указан, парсится только этот раздел (без автообхода всех категорий)."
+        ),
+    )
     p.add_argument("--out", default="voligorost_latin_names.xlsx", help="Путь к xlsx")
     p.add_argument(
         "--max-pages-per-category",
@@ -524,7 +531,20 @@ def main() -> None:
         max_pages_per_category=args.max_pages_per_category,
     )
 
-    categories = parser.discover_category_urls()
+    # Вариант 1: пользователь передал URL раздела вручную.
+    # Это режим "парсить только один раздел".
+    if args.category_url:
+        categories = [args.category_url.rstrip("/")]
+        logger.info("Режим одного раздела: %s", categories[0])
+    else:
+        # Вариант 2: полный автообход категорий с главной страницы.
+        categories = parser.discover_category_urls()
+
+    if not categories:
+        logger.error("Не удалось определить категории для обхода. Проверьте URL и доступность сайта.")
+        write_excel([], args.out)
+        return
+
     all_products: set[str] = set()
     for cat in categories:
         all_products.update(parser.discover_product_urls(cat))
