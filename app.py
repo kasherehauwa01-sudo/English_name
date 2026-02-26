@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Streamlit-интерфейс для поиска латиницы в Excel-файлах папки."""
+"""Streamlit-интерфейс для поиска латиницы в Excel-файлах."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from main import scan_folder, setup_logging
+from main import scan_folder, scan_uploaded_files, setup_logging
 
 
 class StreamlitLogHandler(logging.Handler):
@@ -25,53 +25,17 @@ def ensure_logging() -> None:
         setup_logging("parse.log")
 
 
-def pick_folder_via_dialog() -> str:
-    """Открывает системный диалог выбора папки (локальный запуск на ПК пользователя)."""
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        selected = filedialog.askdirectory(title="Выберите папку с Excel-файлами")
-        root.destroy()
-        return selected or ""
-    except Exception:
-        return ""
-
-
 def app() -> None:
     st.set_page_config(page_title="Поиск латиницы в Excel", layout="centered")
     st.title("Поиск латиницы в 'Наименование товаров'")
-    st.write(
-        "Укажите папку с Excel-файлами. На выходе будет .xls-отчёт с колонками: "
-        "Код, Наименование товара, Транскрипция."
+    st.write("Можно выбрать папку на сервере **или** загрузить Excel-файлы прямо из браузера.")
+
+    folder_path = st.text_input("Путь к папке с Excel (серверный путь)", value="")
+    uploaded_files = st.file_uploader(
+        "Выберите Excel-файлы с компьютера (рекомендуется, если проводник недоступен)",
+        type=["xls", "xlsx"],
+        accept_multiple_files=True,
     )
-
-    if "folder_path_value" not in st.session_state:
-        st.session_state["folder_path_value"] = ""
-
-    col_input, col_button = st.columns([5, 1])
-    with col_input:
-        folder_path = st.text_input(
-            "Путь к папке с Excel",
-            key="folder_path_value",
-        )
-    with col_button:
-        st.write("")
-        st.write("")
-        if st.button("📁", help="Выбрать папку через проводник"):
-            selected = pick_folder_via_dialog()
-            if selected:
-                st.session_state["folder_path_value"] = selected
-                st.rerun()
-            else:
-                st.warning(
-                    "Не удалось открыть проводник/выбрать папку. "
-                    "Проверьте, что приложение запущено локально с GUI, либо введите путь вручную."
-                )
-
     out_name = st.text_input("Имя итогового файла (.xls)", value="latin_names_report.xls")
 
     status_placeholder = st.empty()
@@ -100,11 +64,20 @@ def app() -> None:
 
         try:
             with st.spinner("Идёт обработка Excel-файлов..."):
-                result = scan_folder(
-                    folder_path=folder_path.strip(),
-                    out_file=out_name.strip() or "latin_names_report.xls",
-                    status_callback=set_status,
-                )
+                if uploaded_files:
+                    result = scan_uploaded_files(
+                        uploaded_files=uploaded_files,
+                        out_file=out_name.strip() or "latin_names_report.xls",
+                        status_callback=set_status,
+                    )
+                elif folder_path.strip():
+                    result = scan_folder(
+                        folder_path=folder_path.strip(),
+                        out_file=out_name.strip() or "latin_names_report.xls",
+                        status_callback=set_status,
+                    )
+                else:
+                    raise ValueError("Укажите путь к папке или загрузите хотя бы один Excel-файл.")
         except Exception as exc:
             status_placeholder.error("Статус: Ошибка")
             st.error(f"Ошибка: {exc}")
