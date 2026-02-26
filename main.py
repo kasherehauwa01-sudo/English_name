@@ -527,9 +527,15 @@ def run_parsing(
     category_url: Optional[str],
     out_file: str,
     max_pages_per_category: Optional[int],
+    status_callback=None,
 ) -> dict:
     """Общая функция парсинга (используется и CLI, и Streamlit)."""
     logger = logging.getLogger("main")
+
+    def set_status(message: str) -> None:
+        logger.info(message)
+        if status_callback:
+            status_callback(message)
 
     parser = VolgorostParser(
         start_url=start_url,
@@ -538,8 +544,9 @@ def run_parsing(
 
     if category_url:
         categories = [category_url.rstrip("/")]
-        logger.info("Режим одного раздела: %s", categories[0])
+        set_status(f"Режим одного раздела: {categories[0]}")
     else:
+        set_status("Поиск категорий на стартовой странице...")
         categories = parser.discover_category_urls()
 
     if not categories:
@@ -555,14 +562,17 @@ def run_parsing(
         }
 
     all_products: set[str] = set()
-    for cat in categories:
+    for idx, cat in enumerate(categories, start=1):
+        set_status(f"Сканирую раздел {idx}/{len(categories)}: {cat}")
         all_products.update(parser.discover_product_urls(cat))
 
     logger.info("Всего уникальных карточек: %s", len(all_products))
+    set_status(f"Найдено карточек: {len(all_products)}. Начинаю обработку...")
 
     processed = 0
     latin_rows: list[ProductData] = []
     errors: list[tuple[str, str]] = []
+    total_products = len(all_products)
 
     for url in sorted(all_products):
         try:
@@ -576,10 +586,17 @@ def run_parsing(
                 len(latin_rows),
                 url,
             )
+            set_status(
+                f"Обработка карточек: {processed}/{total_products} | в отчёте: {len(latin_rows)}"
+            )
         except Exception as exc:
             errors.append((url, str(exc)))
             logger.error("Ошибка карточки %s: %s", url, exc)
+            set_status(
+                f"Ошибка при обработке карточки ({processed}/{total_products}). Продолжаю..."
+            )
 
+    set_status("Формирую Excel-файл...")
     written = write_excel(latin_rows, out_file)
 
     logger.info("=" * 50)
@@ -592,6 +609,7 @@ def run_parsing(
         for u, e in errors[:50]:
             logger.info("ERROR URL: %s | %s", u, e)
 
+    set_status("Готово")
     return {
         "categories": len(categories),
         "processed": processed,

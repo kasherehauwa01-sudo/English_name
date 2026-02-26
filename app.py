@@ -11,8 +11,20 @@ import streamlit as st
 from main import run_parsing, setup_logging
 
 
+class StreamlitLogHandler(logging.Handler):
+    """Лог-хендлер, который выводит сообщения в Streamlit в реальном времени."""
+
+    def __init__(self, sink_callback):
+        super().__init__()
+        self.sink_callback = sink_callback
+
+    def emit(self, record: logging.LogRecord) -> None:
+        message = self.format(record)
+        self.sink_callback(message)
+
+
 def ensure_logging() -> None:
-    """Инициализирует логирование один раз для Streamlit-процесса."""
+    """Инициализирует базовое логирование один раз для Streamlit-процесса."""
     if not logging.getLogger().handlers:
         setup_logging("parse.log")
 
@@ -38,17 +50,46 @@ def app() -> None:
         step=1,
     )
 
+    status_placeholder = st.empty()
+    logs_placeholder = st.empty()
+
     if st.button("Запустить парсинг", type="primary"):
         ensure_logging()
-        with st.spinner("Идёт парсинг, это может занять несколько минут..."):
-            result = run_parsing(
-                start_url=start_url.strip(),
-                category_url=category_url.strip() or None,
-                out_file=out_name.strip() or "voligorost_latin_names.xlsx",
-                max_pages_per_category=int(max_pages) or None,
-            )
 
-        st.success("Готово")
+        log_lines: list[str] = []
+
+        def push_log_line(line: str) -> None:
+            log_lines.append(line)
+            # Ограничиваем буфер, чтобы интерфейс не тормозил на очень длинном запуске.
+            if len(log_lines) > 500:
+                del log_lines[:100]
+            logs_placeholder.text_area("Логи выполнения", value="\n".join(log_lines), height=280)
+
+        def set_status(message: str) -> None:
+            status_placeholder.info(f"Статус: {message}")
+
+        root_logger = logging.getLogger()
+        streamlit_handler = StreamlitLogHandler(push_log_line)
+        streamlit_handler.setLevel(logging.INFO)
+        streamlit_handler.setFormatter(
+            logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+        )
+        root_logger.addHandler(streamlit_handler)
+
+        try:
+            with st.spinner("Идёт парсинг, это может занять несколько минут..."):
+                result = run_parsing(
+                    start_url=start_url.strip(),
+                    category_url=category_url.strip() or None,
+                    out_file=out_name.strip() or "voligorost_latin_names.xlsx",
+                    max_pages_per_category=int(max_pages) or None,
+                    status_callback=set_status,
+                )
+        finally:
+            root_logger.removeHandler(streamlit_handler)
+
+        status_placeholder.success("Статус: Готово")
+        st.success("Парсинг завершён")
         st.write(
             {
                 "Найдено категорий": result["categories"],
