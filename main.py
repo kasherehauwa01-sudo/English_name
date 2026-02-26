@@ -92,7 +92,10 @@ def find_required_columns(columns: list[object]) -> tuple[Optional[object], Opti
 
 def letter_translit(chunk: str) -> str:
     s = chunk.lower()
-    for old, new in [("sch", "щ"), ("sh", "ш"), ("ch", "ч"), ("zh", "ж"), ("kh", "х"), ("ph", "ф"), ("th", "т"), ("ck", "к"), ("qu", "кв")]:
+    for old, new in [
+        ("sch", "щ"), ("sh", "ш"), ("ch", "ч"), ("zh", "ж"), ("kh", "х"),
+        ("ph", "ф"), ("th", "т"), ("ck", "к"), ("qu", "кв"),
+    ]:
         s = s.replace(old, new)
 
     out: list[str] = []
@@ -124,14 +127,21 @@ def letter_translit(chunk: str) -> str:
 def translit_token(token: str) -> str:
     low = token.lower()
     if low in EXCEPTION_MAP:
-        return EXCEPTION_MAP[low]
-    parts = token.split("-")
-    if len(parts) > 1:
-        return "-".join(translit_token(p) for p in parts)
-    mixed = re.findall(r"[A-Za-z]+|\d+", token)
-    if len(mixed) > 1:
-        return "".join(p if p.isdigit() else translit_token(p) for p in mixed)
-    return letter_translit(token)
+        base = EXCEPTION_MAP[low]
+    else:
+        parts = token.split("-")
+        if len(parts) > 1:
+            base = "-".join(translit_token(p) for p in parts)
+        else:
+            mixed = re.findall(r"[A-Za-z]+|\d+", token)
+            if len(mixed) > 1:
+                base = "".join(p if p.isdigit() else translit_token(p) for p in mixed)
+            else:
+                base = letter_translit(token)
+
+    if token.isupper():
+        return base.upper()
+    return base
 
 
 def translit_to_ru(text: str) -> str:
@@ -139,38 +149,103 @@ def translit_to_ru(text: str) -> str:
 
 
 def write_xls(rows: list[MatchRow], out_file: str) -> str:
+    """Пишет отчёт в .xls. Если xlwt недоступен — использует HTML-таблицу с расширением .xls."""
+    final = out_file if out_file.lower().endswith(".xls") else f"{out_file}.xls"
+
     try:
         import xlwt
-    except Exception as exc:
-        raise RuntimeError("Для записи .xls установите зависимость xlwt (pip install xlwt)") from exc
 
-    final = out_file if out_file.lower().endswith(".xls") else f"{out_file}.xls"
-    book = xlwt.Workbook()
-    sheet = book.add_sheet("latin")
-    headers = ["Код", "Наименование товара", "Транскрипция"]
-    hstyle = xlwt.easyxf("font: bold on")
-    for i, h in enumerate(headers):
-        sheet.write(0, i, h, hstyle)
+        book = xlwt.Workbook()
+        sheet = book.add_sheet("latin")
+        headers = ["Код", "Наименование товара", "Транскрипция"]
+        hstyle = xlwt.easyxf("font: bold on")
+        for i, h in enumerate(headers):
+            sheet.write(0, i, h, hstyle)
 
-    widths = [len(h) for h in headers]
-    for r, row in enumerate(rows, start=1):
-        vals = [row.code, row.name, row.transcription]
-        for c, v in enumerate(vals):
-            sheet.write(r, c, v)
-            widths[c] = max(widths[c], len(str(v)))
-    for i, w in enumerate(widths):
-        sheet.col(i).width = min((w + 2) * 256, 256 * 120)
+        widths = [len(h) for h in headers]
+        for r, row in enumerate(rows, start=1):
+            vals = [row.code, row.name, row.transcription]
+            for c, v in enumerate(vals):
+                sheet.write(r, c, v)
+                widths[c] = max(widths[c], len(str(v)))
+        for i, w in enumerate(widths):
+            sheet.col(i).width = min((w + 2) * 256, 256 * 120)
 
-    book.save(final)
-    return final
+        book.save(final)
+        return final
+    except Exception:
+        # Fallback без внешней зависимости: Excel корректно открывает HTML-таблицу с расширением .xls.
+        df = pd.DataFrame(
+            [{"Код": r.code, "Наименование товара": r.name, "Транскрипция": r.transcription} for r in rows]
+        )
+        html = df.to_html(index=False)
+        Path(final).write_text(html, encoding="utf-8")
+        return final
 
 
-def _collect_rows_from_excel(xls: pd.ExcelFile, source_name: str) -> tuple[list[MatchRow], bool]:
-    rows: list[MatchRow] = []
+def _rows_with_merged_cells_xlsx(ws) -> set[int]:
+    rows: set[int] = set()
+    for mr in ws.merged_cells.ranges:
+        rows.update(range(mr.min_row, mr.max_row + 1))
+    return rows
+
+
+def _rows_with_merged_cells_xls(sheet) -> set[int]:
+    rows: set[int] = set()
+    for rlow, rhigh, _clow, _chigh in getattr(sheet, "merged_cells", []):
+        for r in range(rlow, rhigh):
+            rows.add(r + 1)  # в xlrd строки 0-based
+    return rows
+
+
+def _dataframe_from_xlsx_sheet(ws) -> pd.DataFrame:
+    merged_rows = _rows_with_merged_cells_xlsx(ws)
+    rows: list[list[object]] = []
+
+    for r in range(1, ws.max_row + 1):
+        if r <= 9:
+            continue
+        if r in merged_rows:
+            continue
+        values = [ws.cell(row=r, column=c).value for c in range(1, ws.max_column + 1)]
+        if any(v not in (None, "") for v in values):
+            rows.append(values)
+
+    if not rows:
+        return pd.DataFrame()
+    header = [str(h).strip() if h is not None else "" for h in rows[0]]
+    return pd.DataFrame(rows[1:], columns=header)
+
+
+def _dataframe_from_xls_sheet(sheet) -> pd.DataFrame:
+    merged_rows = _rows_with_merged_cells_xls(sheet)
+    rows: list[list[object]] = []
+
+    for r in range(sheet.nrows):
+        row_num = r + 1
+        if row_num <= 9:
+            continue
+        if row_num in merged_rows:
+            continue
+        values = sheet.row_values(r)
+        if any(v not in (None, "") for v in values):
+            rows.append(values)
+
+    if not rows:
+        return pd.DataFrame()
+    header = [str(h).strip() if h is not None else "" for h in rows[0]]
+    return pd.DataFrame(rows[1:], columns=header)
+
+
+def _collect_rows_from_xlsx(source_name: str, binary: bytes | None = None, path: str | None = None) -> tuple[list[MatchRow], bool]:
+    from openpyxl import load_workbook
+
+    wb = load_workbook(filename=BytesIO(binary) if binary is not None else path, data_only=True)
+    all_rows: list[MatchRow] = []
     has_required = False
 
-    for sheet_name in xls.sheet_names:
-        df = pd.read_excel(xls, sheet_name=sheet_name)
+    for sheet_name in wb.sheetnames:
+        df = _dataframe_from_xlsx_sheet(wb[sheet_name])
         if df.empty:
             continue
         code_col, name_col = find_required_columns(list(df.columns))
@@ -180,20 +255,53 @@ def _collect_rows_from_excel(xls: pd.ExcelFile, source_name: str) -> tuple[list[
         has_required = True
         names = df[name_col].fillna("").astype(str)
         codes = df[code_col].fillna("").astype(str)
-
         for code_value, name_value in zip(codes, names):
             name_text = name_value.strip()
             if name_text and LATIN_RE.search(name_text):
-                rows.append(
-                    MatchRow(
-                        code=str(code_value).strip(),
-                        name=name_text,
-                        transcription=translit_to_ru(name_text),
-                    )
-                )
+                all_rows.append(MatchRow(str(code_value).strip(), name_text, translit_to_ru(name_text)))
 
-    logging.getLogger("main").info("%s: найдено строк с латиницей: %s", source_name, len(rows))
-    return rows, has_required
+    logging.getLogger("main").info("%s: найдено строк с латиницей: %s", source_name, len(all_rows))
+    return all_rows, has_required
+
+
+def _collect_rows_from_xls(source_name: str, binary: bytes | None = None, path: str | None = None) -> tuple[list[MatchRow], bool]:
+    import xlrd
+
+    if binary is not None:
+        book = xlrd.open_workbook(file_contents=binary, formatting_info=True)
+    else:
+        book = xlrd.open_workbook(path, formatting_info=True)
+
+    all_rows: list[MatchRow] = []
+    has_required = False
+
+    for sheet in book.sheets():
+        df = _dataframe_from_xls_sheet(sheet)
+        if df.empty:
+            continue
+        code_col, name_col = find_required_columns(list(df.columns))
+        if not code_col or not name_col:
+            continue
+
+        has_required = True
+        names = df[name_col].fillna("").astype(str)
+        codes = df[code_col].fillna("").astype(str)
+        for code_value, name_value in zip(codes, names):
+            name_text = name_value.strip()
+            if name_text and LATIN_RE.search(name_text):
+                all_rows.append(MatchRow(str(code_value).strip(), name_text, translit_to_ru(name_text)))
+
+    logging.getLogger("main").info("%s: найдено строк с латиницей: %s", source_name, len(all_rows))
+    return all_rows, has_required
+
+
+def _collect_rows_from_file(source_name: str, suffix: str, binary: bytes | None = None, path: str | None = None) -> tuple[list[MatchRow], bool]:
+    suffix = suffix.lower()
+    if suffix == ".xlsx":
+        return _collect_rows_from_xlsx(source_name, binary=binary, path=path)
+    if suffix == ".xls":
+        return _collect_rows_from_xls(source_name, binary=binary, path=path)
+    raise ValueError(f"Неподдерживаемый формат файла: {suffix}")
 
 
 def scan_folder(folder_path: str, out_file: str, status_callback=None) -> dict:
@@ -218,8 +326,11 @@ def scan_folder(folder_path: str, out_file: str, status_callback=None) -> dict:
     for idx, file_path in enumerate(files, start=1):
         set_status(f"Обрабатываю файл {idx}/{len(files)}: {file_path.name}")
         try:
-            xls = pd.ExcelFile(file_path)
-            rows, has_required = _collect_rows_from_excel(xls, file_path.name)
+            rows, has_required = _collect_rows_from_file(
+                source_name=file_path.name,
+                suffix=file_path.suffix,
+                path=str(file_path),
+            )
             all_rows.extend(rows)
             if has_required:
                 files_with_columns += 1
@@ -241,7 +352,6 @@ def scan_folder(folder_path: str, out_file: str, status_callback=None) -> dict:
 
 
 def scan_uploaded_files(uploaded_files: list, out_file: str, status_callback=None) -> dict:
-    """Альтернатива выбору папки: обработка загруженных в браузере Excel-файлов."""
     logger = logging.getLogger("main")
 
     def set_status(msg: str) -> None:
@@ -257,9 +367,12 @@ def scan_uploaded_files(uploaded_files: list, out_file: str, status_callback=Non
     for idx, uf in enumerate(uploaded_files, start=1):
         set_status(f"Обрабатываю загруженный файл {idx}/{len(uploaded_files)}: {uf.name}")
         try:
-            data = BytesIO(uf.getvalue())
-            xls = pd.ExcelFile(data)
-            rows, has_required = _collect_rows_from_excel(xls, uf.name)
+            suffix = Path(uf.name).suffix.lower()
+            rows, has_required = _collect_rows_from_file(
+                source_name=uf.name,
+                suffix=suffix,
+                binary=uf.getvalue(),
+            )
             all_rows.extend(rows)
             if has_required:
                 files_with_columns += 1
