@@ -124,24 +124,44 @@ def letter_translit(chunk: str) -> str:
     return "".join(out)
 
 
+def apply_case_style(source_token: str, transliterated: str) -> str:
+    """Сохраняет регистр транскрипции по образцу исходного латинского слова."""
+    if source_token.isupper():
+        return transliterated.upper()
+    if source_token.islower():
+        return transliterated.lower()
+    if source_token[:1].isupper() and source_token[1:].islower():
+        return transliterated[:1].upper() + transliterated[1:].lower() if transliterated else transliterated
+    return transliterated
+
+
 def translit_token(token: str) -> str:
+    # Если латинское слово содержит 1-2 буквы — не транскрибируем.
+    if re.fullmatch(r"[A-Za-z]{1,2}", token):
+        return token
+
     low = token.lower()
     if low in EXCEPTION_MAP:
         base = EXCEPTION_MAP[low]
-    else:
-        parts = token.split("-")
-        if len(parts) > 1:
-            base = "-".join(translit_token(p) for p in parts)
-        else:
-            mixed = re.findall(r"[A-Za-z]+|\d+", token)
-            if len(mixed) > 1:
-                base = "".join(p if p.isdigit() else translit_token(p) for p in mixed)
-            else:
-                base = letter_translit(token)
+        return apply_case_style(token, base)
 
-    if token.isupper():
-        return base.upper()
-    return base
+    parts = token.split("-")
+    if len(parts) > 1:
+        # Для дефисных слов сохраняем дефис и отдельно применяем правила по частям.
+        return "-".join(translit_token(p) for p in parts)
+
+    mixed = re.findall(r"[A-Za-z]+|\d+", token)
+    if len(mixed) > 1:
+        out_parts: list[str] = []
+        for part in mixed:
+            if part.isdigit():
+                out_parts.append(part)
+            else:
+                out_parts.append(translit_token(part))
+        return "".join(out_parts)
+
+    base = letter_translit(token)
+    return apply_case_style(token, base)
 
 
 def translit_to_ru(text: str) -> str:

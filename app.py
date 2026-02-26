@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from main import scan_folder, scan_uploaded_files, setup_logging
 
@@ -23,6 +25,23 @@ class StreamlitLogHandler(logging.Handler):
 def ensure_logging() -> None:
     if not logging.getLogger().handlers:
         setup_logging("parse.log")
+
+
+
+def trigger_auto_download(file_bytes: bytes, file_name: str, mime: str) -> None:
+    """Автоматически инициирует скачивание файла в браузере после завершения анализа."""
+    b64 = base64.b64encode(file_bytes).decode("utf-8")
+    href = f"data:{mime};base64,{b64}"
+    html = f"""
+    <a id="auto-download-link" href="{href}" download="{file_name}" style="display:none">download</a>
+    <script>
+      const link = document.getElementById('auto-download-link');
+      if (link) {{
+        link.click();
+      }}
+    </script>
+    """
+    components.html(html, height=0)
 
 
 def app() -> None:
@@ -104,11 +123,21 @@ def app() -> None:
 
             out_path = Path(result["output"])
             if out_path.exists():
+                file_bytes = out_path.read_bytes()
+                file_name = out_path.name
+                mime = (
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    if file_name.lower().endswith(".xlsx")
+                    else "application/vnd.ms-excel"
+                )
+
+                trigger_auto_download(file_bytes=file_bytes, file_name=file_name, mime=mime)
+                st.info("Файл сформирован: загрузка началась автоматически. Если не сработало — нажмите кнопку ниже.")
                 st.download_button(
-                    "Скачать итоговый XLS",
-                    data=out_path.read_bytes(),
-                    file_name=out_path.name,
-                    mime="application/vnd.ms-excel",
+                    "Скачать отчёт вручную",
+                    data=file_bytes,
+                    file_name=file_name,
+                    mime=mime,
                 )
 
 
