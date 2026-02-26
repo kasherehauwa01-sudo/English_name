@@ -521,29 +521,38 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-    setup_logging()
+
+def run_parsing(
+    start_url: str,
+    category_url: Optional[str],
+    out_file: str,
+    max_pages_per_category: Optional[int],
+) -> dict:
+    """Общая функция парсинга (используется и CLI, и Streamlit)."""
     logger = logging.getLogger("main")
 
     parser = VolgorostParser(
-        start_url=args.start_url,
-        max_pages_per_category=args.max_pages_per_category,
+        start_url=start_url,
+        max_pages_per_category=max_pages_per_category,
     )
 
-    # Вариант 1: пользователь передал URL раздела вручную.
-    # Это режим "парсить только один раздел".
-    if args.category_url:
-        categories = [args.category_url.rstrip("/")]
+    if category_url:
+        categories = [category_url.rstrip("/")]
         logger.info("Режим одного раздела: %s", categories[0])
     else:
-        # Вариант 2: полный автообход категорий с главной страницы.
         categories = parser.discover_category_urls()
 
     if not categories:
         logger.error("Не удалось определить категории для обхода. Проверьте URL и доступность сайта.")
-        write_excel([], args.out)
-        return
+        write_excel([], out_file)
+        return {
+            "categories": 0,
+            "processed": 0,
+            "written": 0,
+            "errors": [],
+            "output": out_file,
+            "rows": [],
+        }
 
     all_products: set[str] = set()
     for cat in categories:
@@ -571,7 +580,7 @@ def main() -> None:
             errors.append((url, str(exc)))
             logger.error("Ошибка карточки %s: %s", url, exc)
 
-    written = write_excel(latin_rows, args.out)
+    written = write_excel(latin_rows, out_file)
 
     logger.info("=" * 50)
     logger.info("SUMMARY")
@@ -582,6 +591,25 @@ def main() -> None:
     if errors:
         for u, e in errors[:50]:
             logger.info("ERROR URL: %s | %s", u, e)
+
+    return {
+        "categories": len(categories),
+        "processed": processed,
+        "written": written,
+        "errors": errors,
+        "output": out_file,
+        "rows": latin_rows,
+    }
+
+def main() -> None:
+    args = parse_args()
+    setup_logging()
+    run_parsing(
+        start_url=args.start_url,
+        category_url=args.category_url,
+        out_file=args.out,
+        max_pages_per_category=args.max_pages_per_category,
+    )
 
 
 if __name__ == "__main__":
