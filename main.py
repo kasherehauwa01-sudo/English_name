@@ -171,10 +171,10 @@ def write_xlsx(rows: list[MatchRow], out_file: str) -> str:
     final = out_file if out_file.lower().endswith(".xlsx") else f"{out_file}.xlsx"
     data = [
         {
-            "Файл источник": r.source_file,
             "Код": r.code,
             "Наименование товара": r.name,
             "Транскрипция": r.transcription,
+            "Файл источник": r.source_file,
         }
         for r in rows
     ]
