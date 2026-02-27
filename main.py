@@ -37,6 +37,25 @@ EXCEPTION_MAP = {
     "usb-c": "усб-си",
 }
 
+TRANSLATE_MAP = {
+    "smart": "умный",
+    "wireless": "беспроводной",
+    "portable": "портативный",
+    "mini": "мини",
+    "max": "максимум",
+    "ultra": "ультра",
+    "pro": "профессиональный",
+    "light": "свет",
+    "lamp": "лампа",
+    "router": "роутер",
+    "speaker": "колонка",
+    "watch": "часы",
+    "phone": "телефон",
+    "case": "чехол",
+    "cable": "кабель",
+    "charger": "зарядное устройство",
+}
+
 
 @dataclass
 class MatchRow:
@@ -167,9 +186,47 @@ def deduplicate_rows_by_code(rows: list[MatchRow]) -> list[MatchRow]:
     return out
 
 
+
+
+def translate_name_to_ru(name: str) -> tuple[str, bool]:
+    """Переводит переводимые английские слова в названии на русский аналог."""
+    replaced = False
+
+    def repl(match: re.Match[str]) -> str:
+        nonlocal replaced
+        token = match.group(0)
+        low = token.lower()
+        if low in TRANSLATE_MAP:
+            replaced = True
+            return TRANSLATE_MAP[low]
+        return token
+
+    translated = LATIN_TOKEN_RE.sub(repl, name)
+    return translated, replaced
+
+
+def build_translatable_rows(rows: list[MatchRow]) -> list[dict[str, str]]:
+    """Формирует строки для вкладки 'Переводимые'."""
+    out: list[dict[str, str]] = []
+    for r in rows:
+        translated, has_translation = translate_name_to_ru(r.name)
+        if not has_translation:
+            continue
+        out.append(
+            {
+                "Код": r.code,
+                "Наименование товара": r.name,
+                "Перевод": translated,
+                "Файл источник": r.source_file,
+            }
+        )
+    return out
+
+
 def write_xlsx(rows: list[MatchRow], out_file: str) -> str:
     final = out_file if out_file.lower().endswith(".xlsx") else f"{out_file}.xlsx"
-    data = [
+
+    latin_data = [
         {
             "Код": r.code,
             "Наименование товара": r.name,
@@ -178,9 +235,14 @@ def write_xlsx(rows: list[MatchRow], out_file: str) -> str:
         }
         for r in rows
     ]
-    df = pd.DataFrame(data)
+    latin_df = pd.DataFrame(latin_data)
+
+    translated_data = build_translatable_rows(rows)
+    translated_df = pd.DataFrame(translated_data, columns=["Код", "Наименование товара", "Перевод", "Файл источник"])
+
     with pd.ExcelWriter(final, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="latin")
+        latin_df.to_excel(writer, index=False, sheet_name="latin")
+        translated_df.to_excel(writer, index=False, sheet_name="Переводимые")
     return final
 
 
