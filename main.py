@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Поиск строк с латиницей в Excel и формирование .xls-отчёта."""
+"""Поиск латиницы в Excel и формирование итогового XLSX-отчёта."""
 
 from __future__ import annotations
 
@@ -40,6 +40,7 @@ EXCEPTION_MAP = {
 
 @dataclass
 class MatchRow:
+    source_file: str
     code: str
     name: str
     transcription: str
@@ -49,16 +50,12 @@ def setup_logging(log_file: str = "parse.log") -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(log_file, mode="w", encoding="utf-8"),
-        ],
+        handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(log_file, mode="w", encoding="utf-8")],
     )
 
 
 def normalize_header(value: object) -> str:
-    text = str(value or "")
-    text = text.replace("\r", " ").replace("\n", " ")
+    text = str(value or "").replace("\r", " ").replace("\n", " ")
     text = text.strip().lower().replace("ё", "е")
     return re.sub(r"\s+", " ", text)
 
@@ -67,7 +64,6 @@ def find_required_columns(columns: list[object]) -> tuple[Optional[object], Opti
     code_col = None
     name_col = None
 
-    # По требованию: в отчёт в колонку "Код" берём значение именно из колонки "Код".
     for col in columns:
         if normalize_header(col) == "код":
             code_col = col
@@ -78,18 +74,10 @@ def find_required_columns(columns: list[object]) -> tuple[Optional[object], Opti
         if name_col is None and n in {"наименование товаров", "наименование товара", "наименование"}:
             name_col = col
 
-    # Фоллбэк для кода оставляем только если точной колонки "Код" нет.
     if code_col is None:
         for col in columns:
             n = normalize_header(col)
             if n in {"код товара", "артикул"}:
-                code_col = col
-                break
-
-    if code_col is None:
-        for col in columns:
-            n = normalize_header(col)
-            if "код" in n and "товар" in n:
                 code_col = col
                 break
 
@@ -105,10 +93,7 @@ def find_required_columns(columns: list[object]) -> tuple[Optional[object], Opti
 
 def letter_translit(chunk: str) -> str:
     s = chunk.lower()
-    for old, new in [
-        ("sch", "щ"), ("sh", "ш"), ("ch", "ч"), ("zh", "ж"), ("kh", "х"),
-        ("ph", "ф"), ("th", "т"), ("ck", "к"), ("qu", "кв"),
-    ]:
+    for old, new in [("sch", "щ"), ("sh", "ш"), ("ch", "ч"), ("zh", "ж"), ("kh", "х"), ("ph", "ф"), ("th", "т"), ("ck", "к"), ("qu", "кв")]:
         s = s.replace(old, new)
 
     out: list[str] = []
@@ -138,7 +123,6 @@ def letter_translit(chunk: str) -> str:
 
 
 def apply_case_style(source_token: str, transliterated: str) -> str:
-    """Сохраняет регистр транскрипции по образцу исходного латинского слова."""
     if source_token.isupper():
         return transliterated.upper()
     if source_token.islower():
@@ -149,86 +133,55 @@ def apply_case_style(source_token: str, transliterated: str) -> str:
 
 
 def translit_token(token: str) -> str:
-    # Если латинское слово содержит 1-2 буквы — не транскрибируем.
     if re.fullmatch(r"[A-Za-z]{1,2}", token):
         return token
 
     low = token.lower()
     if low in EXCEPTION_MAP:
-        base = EXCEPTION_MAP[low]
-        return apply_case_style(token, base)
+        return apply_case_style(token, EXCEPTION_MAP[low])
 
     parts = token.split("-")
     if len(parts) > 1:
-        # Для дефисных слов сохраняем дефис и отдельно применяем правила по частям.
         return "-".join(translit_token(p) for p in parts)
 
     mixed = re.findall(r"[A-Za-z]+|\d+", token)
     if len(mixed) > 1:
-        out_parts: list[str] = []
-        for part in mixed:
-            if part.isdigit():
-                out_parts.append(part)
-            else:
-                out_parts.append(translit_token(part))
-        return "".join(out_parts)
+        return "".join(p if p.isdigit() else translit_token(p) for p in mixed)
 
-    base = letter_translit(token)
-    return apply_case_style(token, base)
+    return apply_case_style(token, letter_translit(token))
 
 
 def translit_to_ru(text: str) -> str:
     return LATIN_TOKEN_RE.sub(lambda m: translit_token(m.group(0)), text)
 
 
-
 def deduplicate_rows_by_code(rows: list[MatchRow]) -> list[MatchRow]:
-    """Удаляет дубликаты по колонке `Код`, оставляя первую встретившуюся строку."""
     seen: set[str] = set()
-    unique_rows: list[MatchRow] = []
-
+    out: list[MatchRow] = []
     for row in rows:
-        key = (row.code or "").strip()
+        key = row.code.strip()
         if key in seen:
             continue
         seen.add(key)
-        unique_rows.append(row)
+        out.append(row)
+    return out
 
-    return unique_rows
 
-def write_xls(rows: list[MatchRow], out_file: str) -> str:
-    """Пишет отчёт в .xls. Если xlwt недоступен — использует HTML-таблицу с расширением .xls."""
-    final = out_file if out_file.lower().endswith(".xls") else f"{out_file}.xls"
-
-    try:
-        import xlwt
-
-        book = xlwt.Workbook()
-        sheet = book.add_sheet("latin")
-        headers = ["Код", "Наименование товара", "Транскрипция"]
-        hstyle = xlwt.easyxf("font: bold on")
-        for i, h in enumerate(headers):
-            sheet.write(0, i, h, hstyle)
-
-        widths = [len(h) for h in headers]
-        for r, row in enumerate(rows, start=1):
-            vals = [row.code, row.name, row.transcription]
-            for c, v in enumerate(vals):
-                sheet.write(r, c, v)
-                widths[c] = max(widths[c], len(str(v)))
-        for i, w in enumerate(widths):
-            sheet.col(i).width = min((w + 2) * 256, 256 * 120)
-
-        book.save(final)
-        return final
-    except Exception:
-        # Fallback без внешней зависимости: Excel корректно открывает HTML-таблицу с расширением .xls.
-        df = pd.DataFrame(
-            [{"Код": r.code, "Наименование товара": r.name, "Транскрипция": r.transcription} for r in rows]
-        )
-        html = df.to_html(index=False)
-        Path(final).write_text(html, encoding="utf-8")
-        return final
+def write_xlsx(rows: list[MatchRow], out_file: str) -> str:
+    final = out_file if out_file.lower().endswith(".xlsx") else f"{out_file}.xlsx"
+    data = [
+        {
+            "Файл источник": r.source_file,
+            "Код": r.code,
+            "Наименование товара": r.name,
+            "Транскрипция": r.transcription,
+        }
+        for r in rows
+    ]
+    df = pd.DataFrame(data)
+    with pd.ExcelWriter(final, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="latin")
+    return final
 
 
 def _rows_with_merged_cells_xlsx(ws) -> set[int]:
@@ -242,23 +195,19 @@ def _rows_with_merged_cells_xls(sheet) -> set[int]:
     rows: set[int] = set()
     for rlow, rhigh, _clow, _chigh in getattr(sheet, "merged_cells", []):
         for r in range(rlow, rhigh):
-            rows.add(r + 1)  # в xlrd строки 0-based
+            rows.add(r + 1)
     return rows
 
 
 def _dataframe_from_xlsx_sheet(ws) -> pd.DataFrame:
     merged_rows = _rows_with_merged_cells_xlsx(ws)
     rows: list[list[object]] = []
-
     for r in range(1, ws.max_row + 1):
-        if r <= 9:
-            continue
-        if r in merged_rows:
+        if r <= 9 or r in merged_rows:
             continue
         values = [ws.cell(row=r, column=c).value for c in range(1, ws.max_column + 1)]
         if any(v not in (None, "") for v in values):
             rows.append(values)
-
     if not rows:
         return pd.DataFrame()
     header = [str(h).strip() if h is not None else "" for h in rows[0]]
@@ -268,17 +217,13 @@ def _dataframe_from_xlsx_sheet(ws) -> pd.DataFrame:
 def _dataframe_from_xls_sheet(sheet) -> pd.DataFrame:
     merged_rows = _rows_with_merged_cells_xls(sheet)
     rows: list[list[object]] = []
-
     for r in range(sheet.nrows):
         row_num = r + 1
-        if row_num <= 9:
+        if row_num <= 9 or row_num in merged_rows:
             continue
-        if row_num in merged_rows:
-            continue
-        values = sheet.row_values(r)
-        if any(v not in (None, "") for v in values):
-            rows.append(values)
-
+        vals = sheet.row_values(r)
+        if any(v not in (None, "") for v in vals):
+            rows.append(vals)
     if not rows:
         return pd.DataFrame()
     header = [str(h).strip() if h is not None else "" for h in rows[0]]
@@ -289,9 +234,8 @@ def _collect_rows_from_xlsx(source_name: str, binary: bytes | None = None, path:
     from openpyxl import load_workbook
 
     wb = load_workbook(filename=BytesIO(binary) if binary is not None else path, data_only=True)
-    all_rows: list[MatchRow] = []
+    out: list[MatchRow] = []
     has_required = False
-
     for sheet_name in wb.sheetnames:
         df = _dataframe_from_xlsx_sheet(wb[sheet_name])
         if df.empty:
@@ -299,30 +243,23 @@ def _collect_rows_from_xlsx(source_name: str, binary: bytes | None = None, path:
         code_col, name_col = find_required_columns(list(df.columns))
         if not code_col or not name_col:
             continue
-
         has_required = True
         names = df[name_col].fillna("").astype(str)
         codes = df[code_col].fillna("").astype(str)
         for code_value, name_value in zip(codes, names):
             name_text = name_value.strip()
             if name_text and LATIN_RE.search(name_text):
-                all_rows.append(MatchRow(str(code_value).strip(), name_text, translit_to_ru(name_text)))
-
-    logging.getLogger("main").info("%s: найдено строк с латиницей: %s", source_name, len(all_rows))
-    return all_rows, has_required
+                out.append(MatchRow(source_name, str(code_value).strip(), name_text, translit_to_ru(name_text)))
+    logging.getLogger("main").info("%s: найдено строк с латиницей: %s", source_name, len(out))
+    return out, has_required
 
 
 def _collect_rows_from_xls(source_name: str, binary: bytes | None = None, path: str | None = None) -> tuple[list[MatchRow], bool]:
     import xlrd
 
-    if binary is not None:
-        book = xlrd.open_workbook(file_contents=binary, formatting_info=True)
-    else:
-        book = xlrd.open_workbook(path, formatting_info=True)
-
-    all_rows: list[MatchRow] = []
+    book = xlrd.open_workbook(file_contents=binary, formatting_info=True) if binary is not None else xlrd.open_workbook(path, formatting_info=True)
+    out: list[MatchRow] = []
     has_required = False
-
     for sheet in book.sheets():
         df = _dataframe_from_xls_sheet(sheet)
         if df.empty:
@@ -330,29 +267,26 @@ def _collect_rows_from_xls(source_name: str, binary: bytes | None = None, path: 
         code_col, name_col = find_required_columns(list(df.columns))
         if not code_col or not name_col:
             continue
-
         has_required = True
         names = df[name_col].fillna("").astype(str)
         codes = df[code_col].fillna("").astype(str)
         for code_value, name_value in zip(codes, names):
             name_text = name_value.strip()
             if name_text and LATIN_RE.search(name_text):
-                all_rows.append(MatchRow(str(code_value).strip(), name_text, translit_to_ru(name_text)))
-
-    logging.getLogger("main").info("%s: найдено строк с латиницей: %s", source_name, len(all_rows))
-    return all_rows, has_required
+                out.append(MatchRow(source_name, str(code_value).strip(), name_text, translit_to_ru(name_text)))
+    logging.getLogger("main").info("%s: найдено строк с латиницей: %s", source_name, len(out))
+    return out, has_required
 
 
 def _collect_rows_from_file(source_name: str, suffix: str, binary: bytes | None = None, path: str | None = None) -> tuple[list[MatchRow], bool]:
-    suffix = suffix.lower()
-    if suffix == ".xlsx":
+    if suffix.lower() == ".xlsx":
         return _collect_rows_from_xlsx(source_name, binary=binary, path=path)
-    if suffix == ".xls":
+    if suffix.lower() == ".xls":
         return _collect_rows_from_xls(source_name, binary=binary, path=path)
     raise ValueError(f"Неподдерживаемый формат файла: {suffix}")
 
 
-def scan_folder(folder_path: str, out_file: str, status_callback=None) -> dict:
+def scan_uploaded_files(uploaded_files: list, out_file: str = "Готовый с транскрипцией.xlsx", status_callback=None, progress_callback=None) -> dict:
     logger = logging.getLogger("main")
 
     def set_status(msg: str) -> None:
@@ -360,70 +294,23 @@ def scan_folder(folder_path: str, out_file: str, status_callback=None) -> dict:
         if status_callback:
             status_callback(msg)
 
-    folder = Path(folder_path)
-    if not folder.exists() or not folder.is_dir():
-        raise FileNotFoundError(f"Папка не найдена: {folder_path}")
+    def set_progress(current: int, total: int) -> None:
+        if progress_callback:
+            progress_callback(current, total)
 
-    files = sorted([p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in {".xls", ".xlsx"}])
-    set_status(f"Найдено Excel-файлов: {len(files)}")
+    total = len(uploaded_files)
+    set_status(f"Загружено файлов: {total}")
+    set_progress(0, total if total > 0 else 1)
 
-    all_rows: list[MatchRow] = []
-    errors: list[tuple[str, str]] = []
-    files_with_columns = 0
-
-    for idx, file_path in enumerate(files, start=1):
-        set_status(f"Обрабатываю файл {idx}/{len(files)}: {file_path.name}")
-        try:
-            rows, has_required = _collect_rows_from_file(
-                source_name=file_path.name,
-                suffix=file_path.suffix,
-                path=str(file_path),
-            )
-            all_rows.extend(rows)
-            if has_required:
-                files_with_columns += 1
-        except Exception as exc:
-            errors.append((str(file_path), str(exc)))
-            logger.error("Ошибка чтения %s: %s", file_path, exc)
-
-    set_status("Удаляю дубликаты по колонке 'Код'...")
-    unique_rows = deduplicate_rows_by_code(all_rows)
-
-    set_status("Формирую итоговый XLS...")
-    final_output = write_xls(unique_rows, out_file)
-    set_status("Готово")
-
-    return {
-        "files": len(files),
-        "files_with_columns": files_with_columns,
-        "written": len(unique_rows),
-        "errors": errors,
-        "output": final_output,
-    }
-
-
-def scan_uploaded_files(uploaded_files: list, out_file: str, status_callback=None) -> dict:
-    logger = logging.getLogger("main")
-
-    def set_status(msg: str) -> None:
-        logger.info(msg)
-        if status_callback:
-            status_callback(msg)
-
-    set_status(f"Загружено файлов: {len(uploaded_files)}")
     all_rows: list[MatchRow] = []
     errors: list[tuple[str, str]] = []
     files_with_columns = 0
 
     for idx, uf in enumerate(uploaded_files, start=1):
-        set_status(f"Обрабатываю загруженный файл {idx}/{len(uploaded_files)}: {uf.name}")
+        set_progress(idx - 1, total)
+        set_status(f"Обрабатываю файл {idx}/{total}: {uf.name}")
         try:
-            suffix = Path(uf.name).suffix.lower()
-            rows, has_required = _collect_rows_from_file(
-                source_name=uf.name,
-                suffix=suffix,
-                binary=uf.getvalue(),
-            )
+            rows, has_required = _collect_rows_from_file(uf.name, Path(uf.name).suffix, binary=uf.getvalue())
             all_rows.extend(rows)
             if has_required:
                 files_with_columns += 1
@@ -431,15 +318,16 @@ def scan_uploaded_files(uploaded_files: list, out_file: str, status_callback=Non
             errors.append((uf.name, str(exc)))
             logger.error("Ошибка чтения %s: %s", uf.name, exc)
 
+    set_progress(total, total if total > 0 else 1)
     set_status("Удаляю дубликаты по колонке 'Код'...")
     unique_rows = deduplicate_rows_by_code(all_rows)
 
-    set_status("Формирую итоговый XLS...")
-    final_output = write_xls(unique_rows, out_file)
+    set_status("Формирую итоговый XLSX...")
+    final_output = write_xlsx(unique_rows, out_file)
     set_status("Готово")
 
     return {
-        "files": len(uploaded_files),
+        "files": total,
         "files_with_columns": files_with_columns,
         "written": len(unique_rows),
         "errors": errors,
@@ -447,17 +335,27 @@ def scan_uploaded_files(uploaded_files: list, out_file: str, status_callback=Non
     }
 
 
+def scan_folder(folder_path: str, out_file: str = "Готовый с транскрипцией.xlsx", status_callback=None, progress_callback=None) -> dict:
+    folder = Path(folder_path)
+    uploaded_like = []
+    for p in sorted([x for x in folder.iterdir() if x.is_file() and x.suffix.lower() in {'.xls','.xlsx'}]):
+        class F: pass
+        f=F(); f.name=p.name; f.getvalue=lambda p=p: p.read_bytes()
+        uploaded_like.append(f)
+    return scan_uploaded_files(uploaded_like, out_file, status_callback, progress_callback)
+
+
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Поиск латиницы в 'Наименование товаров' и экспорт в .xls")
+    p = argparse.ArgumentParser(description="Поиск латиницы в 'Наименование товаров' и экспорт в .xlsx")
     p.add_argument("--folder", required=True, help="Путь к папке с Excel-файлами")
-    p.add_argument("--out", default="latin_names_report.xls", help="Путь к итоговому .xls")
+    p.add_argument("--out", default="Готовый с транскрипцией.xlsx", help="Путь к итоговому .xlsx")
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     setup_logging()
-    result = scan_folder(folder_path=args.folder, out_file=args.out)
+    result = scan_folder(args.folder, args.out)
     logging.getLogger("main").info("Готово. Строк: %s | Файл: %s", result["written"], result["output"])
 
 
