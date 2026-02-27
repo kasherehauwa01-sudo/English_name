@@ -226,18 +226,28 @@ def build_translatable_rows(rows: list[MatchRow]) -> list[dict[str, str]]:
 def write_xlsx(rows: list[MatchRow], out_file: str) -> str:
     final = out_file if out_file.lower().endswith(".xlsx") else f"{out_file}.xlsx"
 
-    latin_data = [
-        {
-            "Код": r.code,
-            "Наименование товара": r.name,
-            "Транскрипция": r.transcription,
-            "Файл источник": r.source_file,
-        }
-        for r in rows
-    ]
-    latin_df = pd.DataFrame(latin_data)
-
     translated_data = build_translatable_rows(rows)
+    translated_keys = {
+        (str(r["Код"]), str(r["Наименование товара"]), str(r["Файл источник"]))
+        for r in translated_data
+    }
+
+    latin_data = []
+    for r in rows:
+        key = (str(r.code), str(r.name), str(r.source_file))
+        # По ТЗ: всё, что ушло во вкладку "Переводимые", не должно дублироваться в "latin".
+        if key in translated_keys:
+            continue
+        latin_data.append(
+            {
+                "Код": r.code,
+                "Наименование товара": r.name,
+                "Транскрипция": r.transcription,
+                "Файл источник": r.source_file,
+            }
+        )
+    latin_df = pd.DataFrame(latin_data, columns=["Код", "Наименование товара", "Транскрипция", "Файл источник"])
+
     translated_df = pd.DataFrame(translated_data, columns=["Код", "Наименование товара", "Перевод", "Файл источник"])
 
     with pd.ExcelWriter(final, engine="openpyxl") as writer:
